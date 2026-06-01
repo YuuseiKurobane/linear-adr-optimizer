@@ -129,14 +129,23 @@ impl<'a> FixedCurveManager<'a> {
             self.config.fixed_curve_refine_weight,
             seed,
         );
-        self.refined_points_by_pct.extend(evaluated.clone());
+        self.refined_points_by_pct
+            .extend(evaluated.iter().map(|(pct, point)| (*pct, point.clone())));
         evaluated
     }
 
     fn rebuild(&mut self) -> Result<(), String> {
-        let mut merged = self.coarse_points_by_pct.clone();
-        merged.extend(self.refined_points_by_pct.clone());
-        self.fixed_curve = points_from_pct_map(&merged);
+        let mut merged: HashMap<i64, &Point> = self
+            .coarse_points_by_pct
+            .iter()
+            .map(|(pct, point)| (*pct, point))
+            .collect();
+        merged.extend(self.refined_points_by_pct.iter().map(|(pct, point)| (*pct, point)));
+        self.fixed_curve = merged
+            .into_iter()
+            .map(|(pct_key, point)| (pct_key as f64 / 1_000_000.0 / 100.0, point.clone()))
+            .collect();
+        self.fixed_curve.sort_by(|a, b| a.0.total_cmp(&b.0));
         self.fixed_env = make_fixed_envelope(&self.fixed_curve)?;
         self.target_fixed = self
             .fixed_curve

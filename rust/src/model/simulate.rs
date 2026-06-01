@@ -153,7 +153,7 @@ fn simulate_review_card<T: Rng>(
                     review_day,
                     limit_t,
                     end_t,
-                    predictor.transition(&state, rating, interval),
+                    predictor.transition_with_r(&state, rating, interval, r),
                     &predictor,
                     &adr_model,
                     &behavior_model,
@@ -172,7 +172,7 @@ fn simulate_review_card<T: Rng>(
         // Prepare state for the next iteration
         weight = next_weight;
         t = review_day;
-        state = predictor.transition(&state, cont_rating_idx as i32 + 1, interval);
+        state = predictor.transition_with_r(&state, cont_rating_idx as i32 + 1, interval, r);
     }
     // if l > 1000 {
     //     println!("start {} end {} t = {} len = {}", start_weight, weight, start_t, l);
@@ -234,25 +234,32 @@ struct SafetyNode {
     elapsed: f32,
 }
 
-fn weighted_percentile(values: &[(f32, f32)], percentile: f32) -> f32 {
+fn weighted_percentile_pair(values: &[(f32, f32)], lower: f32, upper: f32) -> (f32, f32) {
     if values.is_empty() {
-        return 0.0;
+        return (0.0, 0.0);
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
     let total_weight: f32 = sorted.iter().map(|(_, w)| *w).sum();
     if total_weight <= 0.0 {
-        return sorted[sorted.len() / 2].0;
+        let value = sorted[sorted.len() / 2].0;
+        return (value, value);
     }
-    let target = total_weight * percentile.clamp(0.0, 1.0);
+    let lower_target = total_weight * lower.clamp(0.0, 1.0);
+    let upper_target = total_weight * upper.clamp(0.0, 1.0);
     let mut accum = 0.0;
-    for (value, weight) in sorted {
+    let mut lower_value = None;
+    for (value, weight) in sorted.iter().copied() {
         accum += weight;
-        if accum >= target {
-            return value;
+        if lower_value.is_none() && accum >= lower_target {
+            lower_value = Some(value);
+        }
+        if accum >= upper_target {
+            return (lower_value.unwrap_or(value), value);
         }
     }
-    values[values.len() - 1].0
+    let fallback = values[values.len() - 1].0;
+    (lower_value.unwrap_or(fallback), fallback)
 }
 
 pub fn dr_summary_by_weight(
@@ -312,7 +319,7 @@ pub fn dr_summary_by_weight(
                 continue;
             }
 
-            let post = predictor.transition(&node.state, rating, node.elapsed);
+            let post = predictor.transition_with_r(&node.state, rating, node.elapsed, r);
             let dr = adr_model.get_dr(post.s, post.d);
             if dr.is_finite() {
                 dr_values.push((dr, child_weight));
@@ -337,8 +344,7 @@ pub fn dr_summary_by_weight(
         }
     }
 
-    let dr_p10 = weighted_percentile(&dr_values, 0.10);
-    let dr_p90 = weighted_percentile(&dr_values, 0.90);
+    let (dr_p10, dr_p90) = weighted_percentile_pair(&dr_values, 0.10, 0.90);
     let dr_mean = if dr_weight_sum > 0.0 {
         dr_weighted_sum / dr_weight_sum
     } else {
@@ -403,7 +409,7 @@ pub fn safety_summary(
 
         for rating_idx in 0..4 {
             let rating = rating_idx as i32 + 1;
-            let post = predictor.transition(&node.state, rating, node.elapsed);
+            let post = predictor.transition_with_r(&node.state, rating, node.elapsed, r);
             let dr = adr_model.get_dr(post.s, post.d);
             intervals[rating_idx] = predictor.get_interval(&post, dr);
             post_states[rating_idx] = post;
@@ -447,8 +453,7 @@ pub fn safety_summary(
         }
     }
 
-    let dr_p10 = weighted_percentile(&dr_values, 0.10);
-    let dr_p90 = weighted_percentile(&dr_values, 0.90);
+    let (dr_p10, dr_p90) = weighted_percentile_pair(&dr_values, 0.10, 0.90);
     let dr_mean = if dr_weight_sum > 0.0 {
         dr_weighted_sum / dr_weight_sum
     } else {
@@ -463,5 +468,99 @@ pub fn safety_summary(
         dr_mean,
         dr_p90,
         aggression: dr_p90 - dr_p10,
+    }
+}
+
+pub fn safety_summary_checks_only(
+    predictor: &FSRSv6,
+    adr_model: &FSRSADR,
+    behavior_model: &BehaviorModel,
+    days: f32,
+    s_max: f32,
+    max_checks: i32,
+) -> SafetySummary {
+    let mut stack = Vec::new();
+    for rating_idx in 0..4 {
+        let rating = rating_idx as i32 + 1;
+        let weight = behavior_model.initial_rating_prob(rating_idx);
+        if weight <= 0.0 {
+            continue;
+        }
+        let state = predictor.first_review(rating);
+        let dr = adr_model.get_dr(state.s, state.d);
+        let interval = predictor.get_interval(&state, dr).round().max(1.0);
+        stack.push(SafetyNode {
+            weight,
+            t: 0.0,
+            state,
+            elapsed: interval,
+        });
+    }
+
+    let mut checks = 0;
+    let mut interval_flips = 0;
+    let mut hard_shortens = 0;
+
+    while let Some(node) = stack.pop() {
+        if checks >= max_checks {
+            break;
+        }
+        let review_t = node.t + node.elapsed;
+        if review_t >= days {
+            continue;
+        }
+
+        let r = predictor.forgetting_curve(&node.state, node.elapsed);
+        let probs = behavior_model.review_rating_prob_dist(r);
+        let mut intervals = [0.0f32; 4];
+        let mut post_states = [FSRSv6State { s: 0.0, d: 0.0 }; 4];
+
+        for rating_idx in 0..4 {
+            let rating = rating_idx as i32 + 1;
+            let post = predictor.transition_with_r(&node.state, rating, node.elapsed, r);
+            let dr = adr_model.get_dr(post.s, post.d);
+            intervals[rating_idx] = predictor.get_interval(&post, dr);
+            post_states[rating_idx] = post;
+        }
+
+        if node.state.s < s_max {
+            checks += 1;
+            let eps = 1e-4;
+            if intervals[0] > intervals[1] + eps
+                || intervals[1] > intervals[2] + eps
+                || intervals[2] > intervals[3] + eps
+            {
+                interval_flips += 1;
+            }
+            if intervals[1] + eps < node.elapsed {
+                hard_shortens += 1;
+            }
+        }
+
+        for rating_idx in (0..4).rev() {
+            let child_weight = node.weight * probs[rating_idx].max(0.0);
+            if child_weight < 1e-6 {
+                continue;
+            }
+            let interval = intervals[rating_idx].round().max(1.0);
+            if interval.is_finite() && interval > 0.0 {
+                stack.push(SafetyNode {
+                    weight: child_weight,
+                    t: review_t,
+                    state: post_states[rating_idx],
+                    elapsed: interval,
+                });
+            }
+        }
+    }
+
+    SafetySummary {
+        checks,
+        interval_flips,
+        hard_shortens,
+        dr_p10: 0.0,
+        dr_mean: 0.0,
+        dr_p90: 0.0,
+        aggression: 0.0,
     }
 }

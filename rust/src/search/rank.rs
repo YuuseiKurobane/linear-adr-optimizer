@@ -64,8 +64,7 @@ pub fn make_fixed_envelope(fixed_points: &[(f64, Point)]) -> Result<FixedEnvelop
 }
 
 pub fn interp_by_dr(fixed_points: &[(f64, Point)], dr: f64, attr: MetricAttr) -> f64 {
-    let mut ordered = fixed_points.to_vec();
-    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let ordered = fixed_points;
     if dr <= ordered[0].0 {
         return attr.value(&ordered[0].1);
     }

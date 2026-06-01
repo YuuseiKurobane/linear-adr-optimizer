@@ -1,9 +1,12 @@
 use crate::config::{normalize, parse_dr, SearchConfig};
-use crate::export::{load_export_row, ExportRow};
+use crate::export::{load_export_rows, select_export_row, ExportRow};
 use crate::model::adr::FSRSADR;
 use crate::model::behavior::BehaviorModel;
 use crate::model::fsrs_v6::FSRSv6;
-use crate::model::simulate::{dr_summary_by_weight, safety_summary, simulate, DrSummary, SafetySummary};
+use crate::model::simulate::{
+    dr_summary_by_weight, safety_summary, safety_summary_checks_only, simulate, DrSummary,
+    SafetySummary,
+};
 use crate::output::html::{html_output_path, write_plot_html};
 use crate::output::png::{png_output_path, write_png};
 use crate::output::summary::write_summary;
@@ -145,6 +148,35 @@ impl EvalEngine {
         })
     }
 
+    pub fn safety_checks_many(
+        &self,
+        candidates: &[Candidate],
+        s_max: f64,
+        max_checks: i32,
+    ) -> Vec<(PointKey, SafetySummary)> {
+        self.pool.install(|| {
+            candidates
+                .par_iter()
+                .map(|candidate| {
+                    let adr = FSRSADR::linear(
+                        candidate.flat as f32,
+                        candidate.s_multi as f32,
+                        candidate.d_multi as f32,
+                    );
+                    let summary = safety_summary_checks_only(
+                        &self.fsrs,
+                        &adr,
+                        &self.behavior_model,
+                        self.days as f32,
+                        s_max as f32,
+                        max_checks,
+                    );
+                    (candidate.key(), summary)
+                })
+                .collect()
+        })
+    }
+
     pub fn dr_summary_many(
         &self,
         candidates: &[Candidate],
@@ -204,9 +236,10 @@ impl EvalEngine {
 }
 
 pub fn run_batch(config: &SearchConfig) -> Result<Vec<SearchResult>, String> {
+    let (export_path, rows) = load_export_rows(&config.export)?;
     let mut results = Vec::new();
     for preset in &config.presets {
-        let row = load_export_row(&config.export, preset)?;
+        let row = select_export_row(&export_path, &rows, preset)?;
         results.push(run_one(config, row)?);
     }
     Ok(results)

@@ -13,7 +13,7 @@ pub fn safety_by_key(
         return HashMap::new();
     }
     engine
-        .safety_many(candidates, config.safety_s_max, config.safety_checks)
+        .safety_checks_many(candidates, config.safety_s_max, config.safety_checks)
         .into_iter()
         .collect()
 }

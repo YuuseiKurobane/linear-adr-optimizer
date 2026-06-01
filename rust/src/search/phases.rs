@@ -408,6 +408,7 @@ pub fn run_micro_hillclimb(
     let mut visited_by_key: HashMap<PointKey, usize> = HashMap::new();
     let steps = (config.phase4_flat_step, config.phase4_s_step, config.phase4_d_step);
     let mut eval_count = 0_u64;
+    let objective = ObjectiveContext::new(fixed, config);
 
     for (label, seed_point) in seeds {
         let Some(mut current) = evaluated.get(&seed_point.key()).cloned() else {
@@ -440,11 +441,15 @@ pub fn run_micro_hillclimb(
                 .filter_map(|candidate| evaluated.get(&candidate.key()).cloned())
                 .collect();
             neighbor_points.push(current.clone());
+            let metrics: HashMap<_, _> = neighbor_points
+                .iter()
+                .map(|point| (point.key(), fixed_curve_equivalence(point, &fixed.fixed_env)))
+                .collect();
             let best = neighbor_points
                 .into_iter()
-                .max_by(|a, b| compare_objective(label, a, b, fixed, config))
+                .max_by(|a, b| compare_objective(label, a, b, &objective, &metrics))
                 .expect("current is present");
-            if compare_objective(label, &best, &current, fixed, config) != std::cmp::Ordering::Greater {
+            if compare_objective(label, &best, &current, &objective, &metrics) != std::cmp::Ordering::Greater {
                 break;
             }
             current = best;
@@ -472,36 +477,50 @@ fn upsert_point(points: &mut Vec<Point>, index: &mut HashMap<PointKey, usize>, p
     }
 }
 
+struct ObjectiveContext {
+    x_band: (f64, f64),
+    y_band: (f64, f64),
+    x0: f64,
+    y0: f64,
+}
+
+impl ObjectiveContext {
+    fn new(fixed: &FixedCurveManager<'_>, config: &SearchConfig) -> Self {
+        Self {
+            x_band: band_for_dr(
+                &fixed.fixed_curve,
+                fixed.target_dr,
+                config.scout_potential_band_pct,
+                MetricAttr::MemorizedCards,
+            ),
+            y_band: band_for_dr(
+                &fixed.fixed_curve,
+                fixed.target_dr,
+                config.scout_potential_band_pct,
+                MetricAttr::MemorizedPerMinute,
+            ),
+            x0: fixed.target_fixed.memorized_cards,
+            y0: fixed.target_fixed.memorized_per_minute,
+        }
+    }
+}
+
 fn compare_objective(
     label: &str,
     a: &Point,
     b: &Point,
-    fixed: &FixedCurveManager<'_>,
-    config: &SearchConfig,
+    objective: &ObjectiveContext,
+    metrics: &HashMap<PointKey, crate::types::FixedCurveEquivalence>,
 ) -> std::cmp::Ordering {
-    let x_band = band_for_dr(
-        &fixed.fixed_curve,
-        fixed.target_dr,
-        config.scout_potential_band_pct,
-        MetricAttr::MemorizedCards,
-    );
-    let y_band = band_for_dr(
-        &fixed.fixed_curve,
-        fixed.target_dr,
-        config.scout_potential_band_pct,
-        MetricAttr::MemorizedPerMinute,
-    );
-    let x0 = fixed.target_fixed.memorized_cards;
-    let y0 = fixed.target_fixed.memorized_per_minute;
-    let ma = fixed_curve_equivalence(a, &fixed.fixed_env);
-    let mb = fixed_curve_equivalence(b, &fixed.fixed_env);
-    let spread_a = equivalence_sort_key(&ma);
-    let spread_b = equivalence_sort_key(&mb);
+    let ma = &metrics[&a.key()];
+    let mb = &metrics[&b.key()];
+    let spread_a = equivalence_sort_key(ma);
+    let spread_b = equivalence_sort_key(mb);
 
     match label {
         "recommended" => {
-            let in_a = a.memorized_cards > x0 && a.memorized_per_minute > y0;
-            let in_b = b.memorized_cards > x0 && b.memorized_per_minute > y0;
+            let in_a = a.memorized_cards > objective.x0 && a.memorized_per_minute > objective.y0;
+            let in_b = b.memorized_cards > objective.x0 && b.memorized_per_minute > objective.y0;
             (in_a as i32)
                 .cmp(&(in_b as i32))
                 .then_with(|| compare_spread(spread_a, spread_b))
@@ -509,26 +528,26 @@ fn compare_objective(
                 .then_with(|| a.memorized_cards.total_cmp(&b.memorized_cards))
         }
         "efficiency" => {
-            let in_a = x_band.0 <= a.memorized_cards && a.memorized_cards <= x_band.1;
-            let in_b = x_band.0 <= b.memorized_cards && b.memorized_cards <= x_band.1;
+            let in_a = objective.x_band.0 <= a.memorized_cards && a.memorized_cards <= objective.x_band.1;
+            let in_b = objective.x_band.0 <= b.memorized_cards && b.memorized_cards <= objective.x_band.1;
             (in_a as i32)
                 .cmp(&(in_b as i32))
                 .then_with(|| a.memorized_per_minute.total_cmp(&b.memorized_per_minute))
                 .then_with(|| compare_spread(spread_a, spread_b))
-                .then_with(|| (-(a.memorized_cards - x0).abs()).total_cmp(&(-(b.memorized_cards - x0).abs())))
+                .then_with(|| (-(a.memorized_cards - objective.x0).abs()).total_cmp(&(-(b.memorized_cards - objective.x0).abs())))
         }
         "memory" => {
-            let in_a = y_band.0 <= a.memorized_per_minute && a.memorized_per_minute <= y_band.1;
-            let in_b = y_band.0 <= b.memorized_per_minute && b.memorized_per_minute <= y_band.1;
+            let in_a = objective.y_band.0 <= a.memorized_per_minute && a.memorized_per_minute <= objective.y_band.1;
+            let in_b = objective.y_band.0 <= b.memorized_per_minute && b.memorized_per_minute <= objective.y_band.1;
             (in_a as i32)
                 .cmp(&(in_b as i32))
                 .then_with(|| a.memorized_cards.total_cmp(&b.memorized_cards))
                 .then_with(|| compare_spread(spread_a, spread_b))
-                .then_with(|| (-(a.memorized_per_minute - y0).abs()).total_cmp(&(-(b.memorized_per_minute - y0).abs())))
+                .then_with(|| (-(a.memorized_per_minute - objective.y0).abs()).total_cmp(&(-(b.memorized_per_minute - objective.y0).abs())))
         }
         _ => compare_tuple_desc(
-            point_equivalence_key(a, &HashMap::from([(a.key(), ma.clone()), (b.key(), mb.clone())])),
-            point_equivalence_key(b, &HashMap::from([(a.key(), ma), (b.key(), mb)])),
+            point_equivalence_key(a, metrics),
+            point_equivalence_key(b, metrics),
         ),
     }
 }

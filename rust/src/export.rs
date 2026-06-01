@@ -90,6 +90,11 @@ pub fn latest_export(path: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn load_export_row(path: &Path, selector: &str) -> Result<ExportRow, String> {
+    let (export_path, rows) = load_export_rows(path)?;
+    select_export_row(&export_path, &rows, selector)
+}
+
+pub fn load_export_rows(path: &Path) -> Result<(PathBuf, Vec<Value>), String> {
     let export_path = latest_export(path)?;
     let text = fs::read_to_string(&export_path)
         .map_err(|err| format!("failed to read {}: {err}", export_path.display()))?;
@@ -102,7 +107,10 @@ pub fn load_export_row(path: &Path, selector: &str) -> Result<ExportRow, String>
     if rows.is_empty() {
         return Err(format!("No rows found in {}", export_path.display()));
     }
+    Ok((export_path, rows))
+}
 
+pub fn select_export_row(export_path: &Path, rows: &[Value], selector: &str) -> Result<ExportRow, String> {
     let needle = selector.to_lowercase();
     let passes: [fn(&Value, &str) -> bool; 4] = [
         |row, needle| preset_name(row).to_lowercase() == needle,
@@ -120,7 +128,7 @@ pub fn load_export_row(path: &Path, selector: &str) -> Result<ExportRow, String>
         if matches.len() == 1 {
             return Ok(ExportRow {
                 value: matches.into_iter().next().expect("one row"),
-                export_path,
+                export_path: export_path.to_path_buf(),
             });
         }
         if matches.len() > 1 {
