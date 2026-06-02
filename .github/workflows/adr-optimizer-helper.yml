@@ -1,0 +1,132 @@
+name: Build ADR Optimizer Helper
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-helper:
+    name: ${{ matrix.artifact_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_name: adr-optimizer-windows-x86_64
+            archive_name: adr-optimizer-windows-x86_64.zip
+            binary_name: adr-optimizer.exe
+            runner: windows-latest
+          - artifact_name: adr-optimizer-linux-x86_64
+            archive_name: adr-optimizer-linux-x86_64.tar.gz
+            binary_name: adr-optimizer
+            runner: ubuntu-latest
+          - artifact_name: adr-optimizer-macos-aarch64
+            archive_name: adr-optimizer-macos-aarch64.tar.gz
+            binary_name: adr-optimizer
+            runner: macos-15
+          - artifact_name: adr-optimizer-macos-x86_64
+            archive_name: adr-optimizer-macos-x86_64.tar.gz
+            binary_name: adr-optimizer
+            runner: macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Show Rust target
+        run: rustc -vV
+
+      - name: Build helper
+        working-directory: rust
+        run: cargo build --release --bin adr-optimizer
+
+      - name: Smoke test helper
+        if: runner.os != 'Windows'
+        working-directory: rust
+        run: ./target/release/adr-optimizer --version
+
+      - name: Smoke test helper
+        if: runner.os == 'Windows'
+        working-directory: rust
+        shell: pwsh
+        run: .\target\release\adr-optimizer.exe --version
+
+      - name: Package helper
+        if: runner.os != 'Windows'
+        working-directory: rust
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.binary_name }}"
+          chmod +x "dist/${{ matrix.binary_name }}"
+          tar -czf "../${{ matrix.archive_name }}" -C dist "${{ matrix.binary_name }}"
+
+      - name: Package helper
+        if: runner.os == 'Windows'
+        working-directory: rust
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target\release\${{ matrix.binary_name }}" "dist\${{ matrix.binary_name }}"
+          Compress-Archive -Path "dist\${{ matrix.binary_name }}" -DestinationPath "..\${{ matrix.archive_name }}" -Force
+
+      - name: Upload helper artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.archive_name }}
+          if-no-files-found: error
+
+  bundle-helper-folder:
+    name: adr-optimizer-helper
+    runs-on: ubuntu-latest
+    needs: build-helper
+
+    steps:
+      - name: Download helper artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Assemble helper folder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            helper/adr-optimizer-windows-x86_64 \
+            helper/adr-optimizer-linux-x86_64 \
+            helper/adr-optimizer-macos-aarch64 \
+            helper/adr-optimizer-macos-x86_64
+
+          unzip -q \
+            artifacts/adr-optimizer-windows-x86_64/adr-optimizer-windows-x86_64.zip \
+            -d helper/adr-optimizer-windows-x86_64
+          tar -xzf \
+            artifacts/adr-optimizer-linux-x86_64/adr-optimizer-linux-x86_64.tar.gz \
+            -C helper/adr-optimizer-linux-x86_64
+          tar -xzf \
+            artifacts/adr-optimizer-macos-aarch64/adr-optimizer-macos-aarch64.tar.gz \
+            -C helper/adr-optimizer-macos-aarch64
+          tar -xzf \
+            artifacts/adr-optimizer-macos-x86_64/adr-optimizer-macos-x86_64.tar.gz \
+            -C helper/adr-optimizer-macos-x86_64
+
+          find helper -type f -name adr-optimizer -exec chmod +x {} \;
+          find helper -maxdepth 2 -type f -print
+          tar -czf adr-optimizer-helper.tar.gz helper
+
+      - name: Upload assembled helper folder
+        uses: actions/upload-artifact@v6
+        with:
+          name: adr-optimizer-helper
+          path: adr-optimizer-helper.tar.gz
+          if-no-files-found: error
