@@ -54,6 +54,47 @@ Multiple presets can be optimized in one process:
 python -m adr_pareto --export ".\exports" --preset "Preset A,Preset B" --target-dr 85
 ```
 
+For add-on integrations that need a different target DR, quality preset, or
+point-only result selection for each preset, use a batch config:
+
+```powershell
+adr-optimizer --batch-config ".\exports\adr-batch-example.json"
+```
+
+Example batch config:
+
+```json
+{
+  "export": ".\\exports\\adr-input-example.jsonl",
+  "output_dir": ".\\outputs",
+  "batch_output": ".\\outputs\\adr_batch_latest.json",
+  "jobs": [
+    {
+      "id": "kanji-recommended",
+      "preset": "Kanji Kentei",
+      "target_dr": 85,
+      "quality_preset": "lite",
+      "selection": "recommended"
+    },
+    {
+      "id": "reading-calm-custom",
+      "preset": "Reading",
+      "target_dr": 90,
+      "quality_preset": "medium-high",
+      "selection": "calm",
+      "config": {
+        "final_eval_weight": 60000,
+        "phase4_max_steps": 2
+      }
+    }
+  ]
+}
+```
+
+`selection` accepts `recommended`, `aggressive`, or `calm`. The helper writes
+one machine-readable batch summary JSON and still supports the ordinary
+single-preset CLI.
+
 Point-only compatibility flags are preserved:
 
 ```powershell

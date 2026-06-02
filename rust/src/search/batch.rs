@@ -29,7 +29,9 @@ use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
+use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -241,6 +243,28 @@ pub fn run_batch(config: &SearchConfig) -> Result<Vec<SearchResult>, String> {
     for preset in &config.presets {
         let row = select_export_row(&export_path, &rows, preset)?;
         results.push(run_one(config, row)?);
+    }
+    Ok(results)
+}
+
+pub fn run_configured_batch(configs: &[SearchConfig]) -> Result<Vec<SearchResult>, String> {
+    let mut export_cache = HashMap::<PathBuf, (PathBuf, Vec<Value>)>::new();
+    let mut results = Vec::new();
+    for config in configs {
+        let (export_path, rows) = match export_cache.get(&config.export) {
+            Some(cached) => cached,
+            None => {
+                let loaded = load_export_rows(&config.export)?;
+                export_cache.insert(config.export.clone(), loaded);
+                export_cache
+                    .get(&config.export)
+                    .expect("just inserted export cache entry")
+            }
+        };
+        for preset in &config.presets {
+            let row = select_export_row(export_path, rows, preset)?;
+            results.push(run_one(config, row)?);
+        }
     }
     Ok(results)
 }
