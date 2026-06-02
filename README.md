@@ -26,7 +26,7 @@ exports/                 Anki JSONL exports named adr-input-*.jsonl.
 outputs/                 Generated reports and point-only TXT files.
 helper/                  Bundled release binary for Anki/CLI use.
 rust/                    Rust optimizer crate.
-rust/assets/web/         Plotly HTML assets copied beside generated reports.
+rust/assets/web/         Source Plotly HTML assets embedded into the helper and written beside generated reports.
 ```
 
 ## What It Optimizes

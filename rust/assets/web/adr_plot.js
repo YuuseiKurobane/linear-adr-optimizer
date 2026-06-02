@@ -1,8 +1,6 @@
 (function () {
   "use strict";
 
-  const DEFAULT_SUMMARY = "/adr_plot_lab/fixtures/yuusei85_fake_phase_clouds.json";
-
   const COLORS = {
     phase1Safe: "#6baed6",
     phase1Unsafe: "#cc4c4c",
@@ -566,7 +564,6 @@
     if (active) {
       active.classList.add("active");
     }
-    setStatus(`Selected ${payload.labels.join(" / ")}.`);
   }
 
   function cssEscape(value) {
@@ -619,75 +616,16 @@
     });
   }
 
-  async function loadSummary(path) {
-    if (window.location.protocol === "file:") {
-      throw new Error(
-        "JSON loading is blocked from file:// pages. Open this preview through the local server at http://127.0.0.1:8788/adr_plot_lab/web/index.html, or use Open JSON to choose a local file."
-      );
-    }
-    const response = await fetch(path, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`Could not load ${path}: HTTP ${response.status}`);
-    }
-    return response.json();
-  }
-
-  function setStatus(message) {
-    const status = document.getElementById("status");
-    if (status) {
-      status.textContent = message || "";
-    }
-  }
-
-  function setTitle(summary, source) {
-    const title = document.getElementById("summary-title");
-    if (title) {
-      title.textContent = `${presetName(summary)} | target DR ${targetDr(summary)} | ${source}`;
-    }
-  }
-
-  function statusText(figure) {
-    const phaseTotal = Object.values(figure.meta.phaseCounts).reduce((sum, count) => sum + count, 0);
-    const missing = figure.meta.missingPrimaryPhases
-      ? " Phase 1-4 point clouds were not present in this JSON."
-      : "";
-    return `Rendered ${phaseTotal} phase/background points, ${figure.meta.fixedCurvePoints} fixed-curve points, ${figure.meta.finalFrontierPoints} frontier points, ${figure.meta.selectedPoints} selected points.${missing}`;
-  }
-
-  async function loadAndRender(path) {
-    const plot = document.getElementById("plot");
-    const input = document.getElementById("summary-path");
-    if (!plot) {
-      return;
-    }
-    if (input) {
-      input.value = path;
-    }
-    setStatus("Loading...");
-    const summary = await loadSummary(path);
-    const figure = await render(plot, summary);
-    setTitle(summary, path);
-    setStatus(statusText(figure));
-  }
-
-  async function renderInitialSummary(source) {
+  async function renderInitialSummary() {
     const plot = document.getElementById("plot");
     if (!plot || !window.ADR_INITIAL_SUMMARY) {
       return false;
     }
-    const input = document.getElementById("summary-path");
-    const label = source || window.ADR_INITIAL_SOURCE || "embedded summary";
-    if (input) {
-      input.value = label;
-    }
     try {
-      setStatus("Loading...");
-      const figure = await render(plot, window.ADR_INITIAL_SUMMARY);
-      setTitle(window.ADR_INITIAL_SUMMARY, label);
-      setStatus(statusText(figure));
+      await render(plot, window.ADR_INITIAL_SUMMARY);
       return true;
     } catch (error) {
-      setStatus(error.message);
+      console.error(error);
       return true;
     }
   }
@@ -697,50 +635,7 @@
     if (!plot) {
       return;
     }
-
-    const params = new URLSearchParams(window.location.search);
-    const initialPath = params.get("summary");
-    const form = document.getElementById("summary-form");
-    const fileInput = document.getElementById("summary-file");
-
-    if (form) {
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const input = document.getElementById("summary-path");
-        const path = input && input.value ? input.value.trim() : DEFAULT_SUMMARY;
-        if (path) {
-          loadAndRender(path).catch((error) => setStatus(error.message));
-        }
-      });
-    }
-
-    if (fileInput) {
-      fileInput.addEventListener("change", async () => {
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) {
-          return;
-        }
-        try {
-          setStatus("Loading...");
-          const summary = JSON.parse(await file.text());
-          const figure = await render(plot, summary);
-          setTitle(summary, file.name);
-          setStatus(statusText(figure));
-        } catch (error) {
-          setStatus(error.message);
-        }
-      });
-    }
-
-    if (initialPath) {
-      loadAndRender(initialPath).catch((error) => setStatus(error.message));
-      return;
-    }
-    renderInitialSummary(window.ADR_INITIAL_SOURCE).then((rendered) => {
-      if (!rendered) {
-        loadAndRender(DEFAULT_SUMMARY).catch((error) => setStatus(error.message));
-      }
-    });
+    renderInitialSummary();
   }
 
   window.AdrParetoPlot = {
